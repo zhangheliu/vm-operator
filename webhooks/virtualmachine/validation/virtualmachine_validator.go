@@ -262,6 +262,7 @@ func (v validator) ValidateUpdate(ctx *pkgctx.WebhookRequestContext) admission.R
 	fieldErrs = append(fieldErrs, v.validateBootstrap(ctx, vm)...)
 	fieldErrs = append(fieldErrs, v.validateNetwork(ctx, vm, oldVM)...)
 	fieldErrs = append(fieldErrs, v.validateVolumes(ctx, vm)...)
+	fieldErrs = append(fieldErrs, v.validateVolumeWithPVCImmutableFields(ctx, vm, oldVM)...)
 	fieldErrs = append(fieldErrs, v.validateInstanceStorageVolumes(ctx, vm, oldVM)...)
 	fieldErrs = append(fieldErrs, v.validateReadinessProbe(ctx, vm)...)
 	fieldErrs = append(fieldErrs, v.validateAdvanced(ctx, vm)...)
@@ -1178,6 +1179,87 @@ func (v validator) validateVolumeWithPVC(
 
 	if vol.PersistentVolumeClaim.ClaimName == "" {
 		allErrs = append(allErrs, field.Required(pvcPath.Child("claimName"), ""))
+	}
+
+	return allErrs
+}
+
+// validateVolumeWithPVCImmutableFields validates that v1alpha5 specific fields in PersistentVolumeClaimVolumeSource are immutable
+func (v validator) validateVolumeWithPVCImmutableFields(
+	_ *pkgctx.WebhookRequestContext,
+	vm, oldVM *vmopv1.VirtualMachine) field.ErrorList {
+
+	var allErrs field.ErrorList
+	volumesPath := field.NewPath("spec", "volumes")
+
+	// Create maps to track volumes by name for comparison
+	oldVolumesMap := make(map[string]vmopv1.VirtualMachineVolume)
+	for _, vol := range oldVM.Spec.Volumes {
+		if vol.Name != "" {
+			oldVolumesMap[vol.Name] = vol
+		}
+	}
+
+	for i, vol := range vm.Spec.Volumes {
+		if vol.Name == "" {
+			continue
+		}
+
+		oldVol, exists := oldVolumesMap[vol.Name]
+		if !exists {
+			continue
+		}
+
+		// Skip validation if either volume doesn't have PersistentVolumeClaim
+		// (this is already handled by validateVolumeWithPVC)
+		if vol.PersistentVolumeClaim == nil || oldVol.PersistentVolumeClaim == nil {
+			continue
+		}
+
+		volPath := volumesPath.Index(i)
+		pvcPath := volPath.Child("persistentVolumeClaim")
+
+		// Validate ApplicationType is immutable
+		if vol.PersistentVolumeClaim.ApplicationType != oldVol.PersistentVolumeClaim.ApplicationType {
+			allErrs = append(allErrs, field.Forbidden(
+				pvcPath.Child("applicationType"),
+				validation.FieldImmutableErrorMsg))
+		}
+
+		// Validate ControllerBusNumber is immutable
+		if !reflect.DeepEqual(vol.PersistentVolumeClaim.ControllerBusNumber, oldVol.PersistentVolumeClaim.ControllerBusNumber) {
+			allErrs = append(allErrs, field.Forbidden(
+				pvcPath.Child("controllerBusNumber"),
+				validation.FieldImmutableErrorMsg))
+		}
+
+		// Validate ControllerType is immutable
+		if vol.PersistentVolumeClaim.ControllerType != oldVol.PersistentVolumeClaim.ControllerType {
+			allErrs = append(allErrs, field.Forbidden(
+				pvcPath.Child("controllerType"),
+				validation.FieldImmutableErrorMsg))
+		}
+
+		// Validate DiskMode is immutable
+		if vol.PersistentVolumeClaim.DiskMode != oldVol.PersistentVolumeClaim.DiskMode {
+			allErrs = append(allErrs, field.Forbidden(
+				pvcPath.Child("diskMode"),
+				validation.FieldImmutableErrorMsg))
+		}
+
+		// Validate SharingMode is immutable
+		if vol.PersistentVolumeClaim.SharingMode != oldVol.PersistentVolumeClaim.SharingMode {
+			allErrs = append(allErrs, field.Forbidden(
+				pvcPath.Child("sharingMode"),
+				validation.FieldImmutableErrorMsg))
+		}
+
+		// Validate UnitNumber is immutable
+		if !reflect.DeepEqual(vol.PersistentVolumeClaim.UnitNumber, oldVol.PersistentVolumeClaim.UnitNumber) {
+			allErrs = append(allErrs, field.Forbidden(
+				pvcPath.Child("unitNumber"),
+				validation.FieldImmutableErrorMsg))
+		}
 	}
 
 	return allErrs

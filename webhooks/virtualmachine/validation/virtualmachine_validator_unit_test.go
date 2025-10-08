@@ -6443,6 +6443,363 @@ func unitTestsValidateUpdate() {
 			),
 		)
 	})
+
+	Context("validateVolumeWithPVCImmutableFields", func() {
+		It("should allow when no volumes are present", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeTrue())
+		})
+
+		It("should allow when volumes have no PersistentVolumeClaim", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{Name: "vol1"},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{Name: "vol1"},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeTrue())
+		})
+
+		It("should allow when volumes are identical", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ApplicationType:     vmopv1.VolumeApplicationTypeOracleRAC,
+							ControllerBusNumber: ptr.To(int32(0)),
+							ControllerType:      vmopv1.VirtualControllerTypeSCSI,
+							DiskMode:            vmopv1.VolumeDiskModeIndependentPersistent,
+							SharingMode:         vmopv1.VolumeSharingModeMultiWriter,
+							UnitNumber:          ptr.To(int32(1)),
+						},
+					},
+				},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ApplicationType:     vmopv1.VolumeApplicationTypeOracleRAC,
+							ControllerBusNumber: ptr.To(int32(0)),
+							ControllerType:      vmopv1.VirtualControllerTypeSCSI,
+							DiskMode:            vmopv1.VolumeDiskModeIndependentPersistent,
+							SharingMode:         vmopv1.VolumeSharingModeMultiWriter,
+							UnitNumber:          ptr.To(int32(1)),
+						},
+					},
+				},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeTrue())
+		})
+
+		It("should deny when ApplicationType changes", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ApplicationType: vmopv1.VolumeApplicationTypeMicrosoftWSFC,
+						},
+					},
+				},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ApplicationType: vmopv1.VolumeApplicationTypeOracleRAC,
+						},
+					},
+				},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeFalse())
+			Expect(response.Result.Message).To(ContainSubstring("field is immutable"))
+			Expect(response.Result.Message).To(ContainSubstring("applicationType"))
+		})
+
+		It("should deny when ControllerBusNumber changes", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ControllerBusNumber: ptr.To(int32(1)),
+						},
+					},
+				},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ControllerBusNumber: ptr.To(int32(0)),
+						},
+					},
+				},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeFalse())
+			Expect(response.Result.Message).To(ContainSubstring("field is immutable"))
+			Expect(response.Result.Message).To(ContainSubstring("controllerBusNumber"))
+		})
+
+		It("should deny when ControllerType changes", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ControllerType: vmopv1.VirtualControllerTypeIDE,
+						},
+					},
+				},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ControllerType: vmopv1.VirtualControllerTypeSCSI,
+						},
+					},
+				},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeFalse())
+			Expect(response.Result.Message).To(ContainSubstring("field is immutable"))
+			Expect(response.Result.Message).To(ContainSubstring("controllerType"))
+		})
+
+		It("should deny when DiskMode changes", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							DiskMode: vmopv1.VolumeDiskModeIndependentNonPersistent,
+						},
+					},
+				},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							DiskMode: vmopv1.VolumeDiskModeIndependentPersistent,
+						},
+					},
+				},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeFalse())
+			Expect(response.Result.Message).To(ContainSubstring("field is immutable"))
+			Expect(response.Result.Message).To(ContainSubstring("diskMode"))
+		})
+
+		It("should deny when SharingMode changes", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							SharingMode: vmopv1.VolumeSharingModeNone,
+						},
+					},
+				},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							SharingMode: vmopv1.VolumeSharingModeMultiWriter,
+						},
+					},
+				},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeFalse())
+			Expect(response.Result.Message).To(ContainSubstring("field is immutable"))
+			Expect(response.Result.Message).To(ContainSubstring("sharingMode"))
+		})
+
+		It("should deny when UnitNumber changes", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							UnitNumber: ptr.To(int32(2)),
+						},
+					},
+				},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							UnitNumber: ptr.To(int32(1)),
+						},
+					},
+				},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeFalse())
+			Expect(response.Result.Message).To(ContainSubstring("field is immutable"))
+			Expect(response.Result.Message).To(ContainSubstring("unitNumber"))
+		})
+
+		It("should allow when only non-v1alpha5 fields change", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1-updated",
+							},
+							ApplicationType: vmopv1.VolumeApplicationTypeOracleRAC,
+						},
+					},
+				},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ApplicationType: vmopv1.VolumeApplicationTypeOracleRAC,
+						},
+					},
+				},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeTrue())
+		})
+
+		It("should handle multiple volumes with different changes", func() {
+			ctx.vm.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ApplicationType: vmopv1.VolumeApplicationTypeMicrosoftWSFC, // Changed
+						},
+					},
+				},
+				{
+					Name: "vol2",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc2",
+							},
+							ControllerType: vmopv1.VirtualControllerTypeIDE, // Changed
+						},
+					},
+				},
+			}
+			ctx.oldVM.Spec.Volumes = []vmopv1.VirtualMachineVolume{
+				{
+					Name: "vol1",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc1",
+							},
+							ApplicationType: vmopv1.VolumeApplicationTypeOracleRAC,
+						},
+					},
+				},
+				{
+					Name: "vol2",
+					VirtualMachineVolumeSource: vmopv1.VirtualMachineVolumeSource{
+						PersistentVolumeClaim: &vmopv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "pvc2",
+							},
+							ControllerType: vmopv1.VirtualControllerTypeSCSI,
+						},
+					},
+				},
+			}
+
+			response := ctx.ValidateUpdate(&ctx.WebhookRequestContext)
+			Expect(response.Allowed).To(BeFalse())
+			Expect(response.Result.Message).To(ContainSubstring("field is immutable"))
+			Expect(response.Result.Message).To(ContainSubstring("applicationType"))
+			Expect(response.Result.Message).To(ContainSubstring("controllerType"))
+		})
+	})
 }
 
 func unitTestsValidateDelete() {
