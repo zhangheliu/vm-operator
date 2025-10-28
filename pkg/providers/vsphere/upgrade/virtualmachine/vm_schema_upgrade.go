@@ -13,6 +13,7 @@ import (
 	vimtypes "github.com/vmware/govmomi/vim25/types"
 
 	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha5"
+	cnsv1alpha1 "github.com/vmware-tanzu/vm-operator/external/vsphere-csi-driver/api/v1alpha1"
 	pkgcfg "github.com/vmware-tanzu/vm-operator/pkg/config"
 	pkgconst "github.com/vmware-tanzu/vm-operator/pkg/constants"
 	pkgerr "github.com/vmware-tanzu/vm-operator/pkg/errors"
@@ -427,14 +428,16 @@ func reconcileDevices(
 		}
 	}
 
-	// Build a map of backing file name to CD-ROM device.
-	var cdromDevices []*vimtypes.VirtualCdrom
+	var (
+		cdromDevices []*vimtypes.VirtualCdrom
+		diskDevices  []*vimtypes.VirtualDisk
+	)
 
 	for i := range moVM.Config.Hardware.Device {
 		switch d := moVM.Config.Hardware.Device[i].(type) {
 
 		case *vimtypes.VirtualDisk:
-			reconcileVirtualDisk(ctx, vm, d)
+			diskDevices = append(diskDevices, d)
 
 		case *vimtypes.VirtualCdrom:
 			cdromDevices = append(cdromDevices, d)
@@ -442,16 +445,188 @@ func reconcileDevices(
 	}
 
 	reconcileVirtualCDROMs(ctx, k8sClient, vm, ctrlKeyToCtrlStatus, cdromDevices)
+	reconcileVirtualDisks(ctx, k8sClient, vm, ctrlKeyToCtrlStatus, diskDevices)
 }
 
-func reconcileVirtualDisk(
+// reconcileVirtualDisks reconciles the VM's disk devices during
+// schema upgrade. It maps disk devices from the vSphere VM
+// configuration to the VirtualMachine spec volumes, updating the
+// unit number, controller type, and controller bus number for each
+// PVC volume based on the disk UUID and controller information.
+func reconcileVirtualDisks(
 	ctx context.Context,
-	_ *vmopv1.VirtualMachine,
-	_ *vimtypes.VirtualDisk) {
+	k8sClient ctrlclient.Client,
+	vm *vmopv1.VirtualMachine,
+	ctrlKeyToCtrlStatus map[int32]vmopv1.VirtualControllerStatus,
+	diskDevices []*vimtypes.VirtualDisk) {
 
 	logger := pkglog.FromContextOrDefault(ctx)
-	logger.V(4).Info("Reconciling schema upgrade for VM disk")
+	logger.V(4).Info("Reconciling schema upgrade for VM disks")
 
+	if vm.Status.BiosUUID == "" {
+		logger.V(4).Info(
+			"Skipping PVC volume backfilling, BiosUUID not available")
+		return
+	}
+
+	diskUUIDToDiskInfo := buildDiskUUIDToDiskInfoMap(diskDevices)
+	volumeNameToDiskUUID, err := buildVolumeNameToDiskUUIDMap(
+		ctx, k8sClient, vm)
+	if err != nil {
+		return
+	}
+
+	for i := range vm.Spec.Volumes {
+		vol := &vm.Spec.Volumes[i]
+
+		if vol.PersistentVolumeClaim == nil {
+			continue
+		}
+
+		reconcilePVCVolumePlacement(
+			ctx,
+			vol,
+			volumeNameToDiskUUID,
+			diskUUIDToDiskInfo,
+			ctrlKeyToCtrlStatus)
+	}
+}
+
+// buildDiskUUIDToDiskInfoMap builds a map of disk UUID to disk
+// device info by extracting from vSphere VM hardware.
+func buildDiskUUIDToDiskInfoMap(
+	diskDevices []*vimtypes.VirtualDisk) map[string]pkgutil.VirtualDiskInfo {
+
+	diskUUIDToDiskInfo := make(map[string]pkgutil.VirtualDiskInfo)
+	for _, disk := range diskDevices {
+		vdi := pkgutil.GetVirtualDiskInfo(disk)
+		if vdi.UUID != "" {
+			diskUUIDToDiskInfo[vdi.UUID] = vdi
+		}
+	}
+	return diskUUIDToDiskInfo
+}
+
+// buildVolumeNameToDiskUUIDMap builds a map of volume name to
+// disk UUID by querying CnsNodeVmAttachment objects. This is the
+// source of truth for PVC volume attachments.
+func buildVolumeNameToDiskUUIDMap(
+	ctx context.Context,
+	k8sClient ctrlclient.Client,
+	vm *vmopv1.VirtualMachine) (map[string]string, error) {
+
+	logger := pkglog.FromContextOrDefault(ctx)
+	volumeNameToDiskUUID := make(map[string]string)
+	attachments, err := pkgutil.GetAttachmentsForVM(ctx, k8sClient, vm)
+	if err != nil {
+		logger.V(4).Info(
+			"Failed to get CnsNodeVmAttachments", "error", err)
+		return nil, err
+	}
+
+	for _, attachment := range attachments {
+		if attachment.Status.Attached {
+			diskUUID := attachment.Status.AttachmentMetadata[cnsv1alpha1.AttributeFirstClassDiskUUID]
+			if diskUUID != "" {
+				volumeNameToDiskUUID[attachment.Spec.VolumeName] =
+					diskUUID
+			}
+		}
+	}
+	return volumeNameToDiskUUID, nil
+}
+
+// reconcilePVCVolumePlacement reconciles the placement info for
+// a single PVC volume.
+func reconcilePVCVolumePlacement(
+	ctx context.Context,
+	vol *vmopv1.VirtualMachineVolume,
+	volumeNameToDiskUUID map[string]string,
+	diskUUIDToDiskInfo map[string]pkgutil.VirtualDiskInfo,
+	ctrlKeyToCtrlStatus map[int32]vmopv1.VirtualControllerStatus) {
+
+	logger := pkglog.FromContextOrDefault(ctx)
+	pvc := vol.PersistentVolumeClaim
+
+	diskUUID, ok := volumeNameToDiskUUID[pvc.ClaimName]
+	if !ok {
+		logger.V(4).Info(
+			"Skipping PVC volume without disk UUID",
+			"volume", vol.Name)
+		return
+	}
+
+	info, ok := diskUUIDToDiskInfo[diskUUID]
+	if !ok {
+		logger.V(4).Info(
+			"Disk UUID is not found in VM hardware",
+			"volume", vol.Name,
+			"diskUUID", diskUUID)
+		return
+	}
+
+	ctrl, ok := ctrlKeyToCtrlStatus[info.ControllerKey]
+	if !ok {
+		logger.V(4).Info(
+			"Controller not found in status for PVC volume",
+			"volume", vol.Name,
+			"controllerKey", info.ControllerKey,
+			"diskUUID", diskUUID)
+		return
+	}
+
+	if !needsPlacementBackfill(pvc) {
+		return
+	}
+
+	if hasPlacementMismatch(pvc, &info, &ctrl) {
+		logger.V(4).Info(
+			"Skipping PVC volume spec backfill due to mismatch between "+
+				"vm volume pvc spec and vm disk state",
+			"volume", vol.Name,
+			"spec.unitNumber", pvc.UnitNumber,
+			"disk.unitNumber", info.UnitNumber,
+			"spec.controllerBusNumber", pvc.ControllerBusNumber,
+			"disk.controllerBusNumber", ctrl.BusNumber,
+			"spec.controllerType", pvc.ControllerType,
+			"disk.controllerType", ctrl.Type)
+		return
+	}
+
+	// Perform atomic backfill of all placement info fields.
+	pvc.UnitNumber = info.UnitNumber
+	pvc.ControllerType = ctrl.Type
+	pvc.ControllerBusNumber = &ctrl.BusNumber
+
+	logger.V(4).Info("Backfilled PVC volume placement info",
+		"volume", vol.Name,
+		"unitNumber", *pvc.UnitNumber,
+		"controllerType", pvc.ControllerType,
+		"controllerBusNumber", *pvc.ControllerBusNumber)
+}
+
+// needsPlacementBackfill checks if any placement fields are
+// missing.
+func needsPlacementBackfill(
+	pvc *vmopv1.PersistentVolumeClaimVolumeSource) bool {
+
+	return pvc.UnitNumber == nil ||
+		pvc.ControllerBusNumber == nil ||
+		pvc.ControllerType == ""
+}
+
+// hasPlacementMismatch checks if any existing placement fields
+// conflict with the actual VM hardware configuration.
+func hasPlacementMismatch(
+	pvc *vmopv1.PersistentVolumeClaimVolumeSource,
+	info *pkgutil.VirtualDiskInfo,
+	ctrl *vmopv1.VirtualControllerStatus) bool {
+
+	return (pvc.UnitNumber != nil &&
+		!ptr.Equal(pvc.UnitNumber, info.UnitNumber)) ||
+		(pvc.ControllerBusNumber != nil &&
+			!ptr.Equal(pvc.ControllerBusNumber, &ctrl.BusNumber)) ||
+		(pvc.ControllerType != "" && ctrl.Type != pvc.ControllerType)
 }
 
 // reconcileVirtualCDROMs reconciles the VM's CD-ROM devices during
